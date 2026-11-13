@@ -17,6 +17,10 @@ on:
         description: Version shown in the app (VITE_APP_VERSION). Empty = package.json version via .env.
         type: string
         default: ''
+    outputs:
+      base_url:
+        description: VITE_BASE_URL from .env.<mode> of the built ref (empty if not set)
+        value: ${{ jobs.build_and_test.outputs.base_url }}
 
 permissions:
   contents: read
@@ -25,6 +29,8 @@ jobs:
   build_and_test:
     name: Build and test (${{ inputs.mode }})
     runs-on: ubuntu-latest
+    outputs:
+      base_url: ${{ steps.base_url.outputs.base_url }}
     env:
       npm_config_mode: ${{ inputs.mode }}
     steps:
@@ -33,6 +39,25 @@ jobs:
           ref: ${{ inputs.ref }}
           submodules: true
           lfs: false
+
+      # The environment's public URL, used as the link on the Environments page.
+      # Read from the same .env file the build uses, so there is one source of truth.
+      - name: Read VITE_BASE_URL
+        id: base_url
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          FILE=".env.$MODE"
+          URL=""
+          if [ -f "$FILE" ]; then
+            URL=$(grep -E '^[[:space:]]*VITE_BASE_URL[[:space:]]*=' "$FILE" | tail -n 1 | cut -d= -f2- | tr -d "\"' \r" || true)
+          fi
+          if [[ "$URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]]*)?$ ]]; then
+            echo "base_url=$URL" >> "$GITHUB_OUTPUT"
+            echo "Environment URL: $URL"
+          else
+            echo "::warning::No valid VITE_BASE_URL in $FILE - the environment will have no link."
+          fi
 
       # Real env vars take precedence over .env files in Vite, so this overrides
       # VITE_APP_VERSION=$npm_package_version. Only set when a version is given,

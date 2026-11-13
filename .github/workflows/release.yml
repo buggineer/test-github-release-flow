@@ -59,7 +59,6 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       environment: ${{ steps.resolve.outputs.environment }}
       mode: ${{ steps.resolve.outputs.mode }}
-      url: ${{ steps.resolve.outputs.url }}
     steps:
       - name: Validate inputs
         id: resolve
@@ -90,9 +89,9 @@ jobs:
           fi
 
           case "$TARGET_ENV" in
-            qa)         MODE=staging;    URL=https://nice-desert-098747610.5.azurestaticapps.net ;;
-            beta)       MODE=beta;       URL=https://yellow-ground-038f6fb10.8.azurestaticapps.net ;;
-            production) MODE=production; URL=https://ashy-bay-0ec4ab910.3.azurestaticapps.net ;;
+            qa)         MODE=staging ;;
+            beta)       MODE=beta ;;
+            production) MODE=production ;;
             *) echo "::error::Unknown environment."; exit 1 ;;
           esac
 
@@ -101,7 +100,6 @@ jobs:
             echo "version=${TAG#v}"
             echo "environment=$TARGET_ENV"
             echo "mode=$MODE"
-            echo "url=$URL"
           } >> "$GITHUB_OUTPUT"
 
           echo "Deploying **$TAG** to **$TARGET_ENV** (mode \`$MODE\`)" >> "$GITHUB_STEP_SUMMARY"
@@ -159,7 +157,6 @@ jobs:
       ref: refs/tags/${{ needs.resolve.outputs.tag }}
       version: ${{ needs.resolve.outputs.version }}
       label: ${{ needs.resolve.outputs.tag }}
-      url: ${{ needs.resolve.outputs.url }}
     secrets: inherit
 
   github-release:

@@ -26,5 +26,4 @@ jobs:
       mode: development
       ref: ${{ github.sha }}
       label: ${{ github.ref_name }}@${{ github.sha }}
-      url: https://blue-hill-0e7eedd10.8.azurestaticapps.net
     secrets: inherit
