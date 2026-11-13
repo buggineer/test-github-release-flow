@@ -90,9 +90,9 @@ jobs:
           fi
 
           case "$TARGET_ENV" in
-            qa)         MODE=staging;    URL=https://REPLACE-WITH-QA.azurestaticapps.net ;;
-            beta)       MODE=beta;       URL=https://REPLACE-WITH-BETA.azurestaticapps.net ;;
-            production) MODE=production; URL=https://REPLACE-WITH-PROD.azurestaticapps.net ;;
+            qa)         MODE=staging;    URL=https://nice-desert-098747610.5.azurestaticapps.net ;;
+            beta)       MODE=beta;       URL=https://yellow-ground-038f6fb10.8.azurestaticapps.net ;;
+            production) MODE=production; URL=https://ashy-bay-0ec4ab910.3.azurestaticapps.net ;;
             *) echo "::error::Unknown environment."; exit 1 ;;
           esac
 
