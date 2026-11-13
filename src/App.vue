@@ -11,7 +11,7 @@ const rows: [string, string][] = [
 <template>
   <header>
     <div class="wrapper">
-      <h1>Release flow sandbox</h1>
+      <h1>Release flow sandbox info</h1>
       <table>
         <tr v-for="[label, value] in rows" :key="label">
           <th>{{ label }}</th>
