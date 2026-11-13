@@ -1,0 +1,132 @@
+name: Deploy (reusable)
+
+# Build one ref for one environment and upload it to Azure Static Web Apps.
+#
+# SAFETY: nothing is uploaded unless the target environment is listed in the
+# repo variable LIVE_ENVIRONMENTS (comma separated, e.g. "dev,qa,beta,production").
+# Unset/empty = every run is a dry run: it builds, waits for approval, writes a
+# "DRY RUN" summary, and stops. No upload, no Slack message.
+# The check runs inside the deploy job, i.e. *after* approval, so removing an
+# environment from the variable stops a deploy that is waiting for approval.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment name (dev, qa, beta, production)
+        type: string
+        required: true
+      mode:
+        description: Vite mode for the build (development, staging, beta, production)
+        type: string
+        required: true
+      ref:
+        description: Git ref to build
+        type: string
+        required: true
+      version:
+        description: Version shown in the app. Empty = package.json version.
+        type: string
+        default: ''
+      label:
+        description: Human readable name of what is deployed (e.g. v3.8.0), used in summary and Slack
+        type: string
+        required: true
+      url:
+        description: Public URL of the environment (shown on the Environments page)
+        type: string
+        required: true
+    outputs:
+      deployed:
+        description: "'true' if the app was uploaded, 'false' for a dry run"
+        value: ${{ jobs.deploy.outputs.deployed }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      mode: ${{ inputs.mode }}
+      ref: ${{ inputs.ref }}
+      version: ${{ inputs.version }}
+
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers, deployment branch rules and the per-environment
+    # AZURE_STATIC_WEB_APPS_TOKEN secret all come from this environment.
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.url }}
+    outputs:
+      deployed: ${{ steps.mode.outputs.live }}
+    env:
+      LIVE_ENVIRONMENTS: ${{ vars.LIVE_ENVIRONMENTS }}
+      TARGET_ENV: ${{ inputs.environment }}
+      LABEL: ${{ inputs.label }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Live or dry run?
+        id: mode
+        run: |
+          LIVE="${LIVE_ENVIRONMENTS// /}"
+          if [[ ",${LIVE}," == *",${TARGET_ENV},"* ]]; then
+            echo "live=true" >> "$GITHUB_OUTPUT"
+            echo "### :rocket: Deploying $LABEL to $TARGET_ENV" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "live=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DRY RUN - '$TARGET_ENV' is not in LIVE_ENVIRONMENTS. Nothing will be deployed."
+            echo "### :test_tube: DRY RUN: would deploy $LABEL to $TARGET_ENV - nothing was uploaded" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Checkout first: actions/checkout cleans the workspace, so it must run
+      # before the artifact is downloaded. Only needed for the Slack action.
+      - name: Checkout (for the Slack action)
+        if: steps.mode.outputs.live == 'true'
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ inputs.mode }}
+          path: dist
+
+      - name: List 'dist' directory contents
+        run: ls -laR dist
+
+      - name: Deploy to Azure Static Web Apps
+        if: steps.mode.outputs.live == 'true'
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: dist
+          skip_app_build: true
+          output_location: ''
+
+      - name: Notify Slack on Success
+        if: success() && steps.mode.outputs.live == 'true' && env.SLACK_WEBHOOK_URL != ''
+        uses: ./.github/actions/slack-notification
+        with:
+          headline: ':rocket: Deploy :spider_web: Web :spider_web: ${{ inputs.label }} to ${{ inputs.environment }}'
+          color: '#4ba14a'
+          message: 'Deployment of ${{ inputs.label }} to ${{ inputs.environment }} was successful :heart:'
+          workflow_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          slack_webhook_url: ${{ env.SLACK_WEBHOOK_URL }}
+
+      - name: Notify Slack on Failure
+        if: failure() && steps.mode.outputs.live == 'true' && env.SLACK_WEBHOOK_URL != ''
+        uses: ./.github/actions/slack-notification
+        with:
+          headline: ':rocket: Deploy :spider_web: Web :spider_web: ${{ inputs.label }} to ${{ inputs.environment }}'
+          color: '#d6422b'
+          message: 'Deployment of ${{ inputs.label }} to ${{ inputs.environment }} failed :broken_heart:'
+          workflow_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          slack_webhook_url: ${{ env.SLACK_WEBHOOK_URL }}

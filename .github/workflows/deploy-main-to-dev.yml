@@ -1,0 +1,30 @@
+name: Deploy main to dev
+
+# Every push to main deploys to dev. "Run workflow" lets you deploy any
+# branch to dev by hand (replaces the old preview* tags).
+# Still a dry run unless "dev" is in the LIVE_ENVIRONMENTS repo variable.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      environment: dev
+      mode: development
+      ref: ${{ github.sha }}
+      label: ${{ github.ref_name }}@${{ github.sha }}
+      url: https://REPLACE-WITH-DEV.azurestaticapps.net
+    secrets: inherit

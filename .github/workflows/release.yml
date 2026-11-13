@@ -1,0 +1,187 @@
+name: Release
+
+# One environment per run, so nothing ever waits on approval for more than a
+# few minutes (approval waits time out after 30 days, releases can be months apart).
+#
+#   push tag vX.Y.Z               -> deploy that tag to QA (automatic)
+#   Run workflow (from main):     -> deploy <tag> to <environment> (qa / beta / production)
+#     promotion, re-deploy and rollback are all the same action
+#
+# Safety layers:
+#   1. Only upload when the environment is in the LIVE_ENVIRONMENTS repo variable
+#      (otherwise the run is titled "DRY RUN ..." and nothing is deployed).
+#   2. beta/production need a GitHub Environment approval.
+#   3. beta/production only accept runs started from the default branch
+#      (Environment deployment rule + check in `resolve`).
+#   4. The order check refuses beta before QA and production before beta.
+
+run-name: >-
+  ${{ contains(format(',{0},', vars.LIVE_ENVIRONMENTS), format(',{0},', inputs.environment || 'qa')) && 'Deploy' || 'DRY RUN' }}
+  ${{ inputs.tag || github.ref_name }}
+  to ${{ inputs.environment || 'qa' }}
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to deploy, e.g. v3.8.0
+        type: string
+        required: true
+      environment:
+        description: Where to deploy it
+        type: choice
+        options:
+          - qa
+          - beta
+          - production
+        required: true
+      override_order:
+        description: 'EMERGENCY ONLY: skip the check that the tag is already on the previous environment'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ inputs.environment || 'qa' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve tag and environment
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      environment: ${{ steps.resolve.outputs.environment }}
+      mode: ${{ steps.resolve.outputs.mode }}
+      url: ${{ steps.resolve.outputs.url }}
+    steps:
+      - name: Validate inputs
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          TARGET_ENV: ${{ inputs.environment || 'qa' }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT" = "workflow_dispatch" ] && [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::Start this workflow from the default branch ($DEFAULT_BRANCH) and pick the tag in the 'tag' input."
+            exit 1
+          fi
+
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The tag input is not a release tag (expected vX.Y.Z, e.g. v3.8.0)."
+            exit 1
+          fi
+
+          if ! gh api "repos/$REPO/git/ref/tags/$TAG" > /dev/null 2>&1; then
+            echo "::error::Tag $TAG does not exist in $REPO."
+            exit 1
+          fi
+
+          case "$TARGET_ENV" in
+            qa)         MODE=staging;    URL=https://REPLACE-WITH-QA.azurestaticapps.net ;;
+            beta)       MODE=beta;       URL=https://REPLACE-WITH-BETA.azurestaticapps.net ;;
+            production) MODE=production; URL=https://REPLACE-WITH-PROD.azurestaticapps.net ;;
+            *) echo "::error::Unknown environment."; exit 1 ;;
+          esac
+
+          {
+            echo "tag=$TAG"
+            echo "version=${TAG#v}"
+            echo "environment=$TARGET_ENV"
+            echo "mode=$MODE"
+            echo "url=$URL"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Deploying **$TAG** to **$TARGET_ENV** (mode \`$MODE\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  guard:
+    name: Check promotion order
+    needs: resolve
+    if: needs.resolve.outputs.environment != 'qa'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Tag must already be on the previous environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          TARGET_ENV: ${{ needs.resolve.outputs.environment }}
+          OVERRIDE: ${{ inputs.override_order }}
+        run: |
+          set -euo pipefail
+
+          case "$TARGET_ENV" in
+            beta)       PREVIOUS=qa ;;
+            production) PREVIOUS=beta ;;
+          esac
+
+          if [ "$OVERRIDE" = "true" ]; then
+            echo "::warning::override_order is set - NOT checking that $TAG is on $PREVIOUS."
+            echo ":warning: Order check skipped with override_order" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Dry runs are titled "DRY RUN ..." and therefore never count.
+          EXPECTED="Deploy $TAG to $PREVIOUS"
+          COUNT=$(gh run list --repo "$REPO" --workflow release.yml --status success --limit 1000 --json displayTitle \
+            | jq --arg t "$EXPECTED" '[.[] | select(.displayTitle == $t)] | length')
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::$TAG has not been deployed to $PREVIOUS yet (no successful run named '$EXPECTED'). Deploy it to $PREVIOUS first. In an emergency, re-run with override_order."
+            exit 1
+          fi
+          echo "OK - found a successful '$EXPECTED' run."
+
+  deploy:
+    name: Deploy
+    needs: [resolve, guard]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.guard.result == 'success' || needs.guard.result == 'skipped') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      environment: ${{ needs.resolve.outputs.environment }}
+      mode: ${{ needs.resolve.outputs.mode }}
+      ref: refs/tags/${{ needs.resolve.outputs.tag }}
+      version: ${{ needs.resolve.outputs.version }}
+      label: ${{ needs.resolve.outputs.tag }}
+      url: ${{ needs.resolve.outputs.url }}
+    secrets: inherit
+
+  github-release:
+    name: Update GitHub Release
+    needs: [resolve, deploy]
+    # Only after a real (not dry-run) deploy to QA or production.
+    if: ${{ !cancelled() && needs.deploy.result == 'success' && needs.deploy.outputs.deployed == 'true' && needs.resolve.outputs.environment != 'beta' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create pre-release / mark as latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          TARGET_ENV: ${{ needs.resolve.outputs.environment }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --verify-tag --prerelease --generate-notes --title "$TAG"
+          fi
+          if [ "$TARGET_ENV" = "production" ]; then
+            gh release edit "$TAG" --repo "$REPO" --prerelease=false --latest
+          fi

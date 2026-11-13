@@ -1,0 +1,23 @@
+name: PR checks
+
+# Lint, test and build every PR into main or a hotfix branch. Never deploys.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+      - 'release/**'
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build_and_test:
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      mode: development

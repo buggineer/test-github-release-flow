@@ -1,0 +1,3 @@
+# robots.txt for development
+User-agent: *
+Disallow: /

@@ -1,0 +1,71 @@
+name: Build and test (reusable)
+
+# Lint, test and build the app for one Vite mode and upload `dist-<mode>`.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: Vite mode (development, staging, beta, production)
+        type: string
+        required: true
+      ref:
+        description: Git ref to build (e.g. refs/tags/v3.8.0). Empty = the commit that triggered the run.
+        type: string
+        default: ''
+      version:
+        description: Version shown in the app (VITE_APP_VERSION). Empty = package.json version via .env.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build_and_test:
+    name: Build and test (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    env:
+      npm_config_mode: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: true
+          lfs: false
+
+      # Real env vars take precedence over .env files in Vite, so this overrides
+      # VITE_APP_VERSION=$npm_package_version. Only set when a version is given,
+      # because an empty env var would also override it (with an empty string).
+      - name: Set app version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: echo "VITE_APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install Dependencies
+        run: npm ci
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - name: Lint
+        run: npm run lint
+      - name: Run Tests
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Copy assets
+        run: npm run copy-assetlinks && npm run copy-robots
+      - name: List 'dist' directory contents
+        run: ls -laR dist
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ inputs.mode }}
+          path: dist
+          include-hidden-files: true
+          retention-days: 14
